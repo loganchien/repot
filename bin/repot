@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+
+from xml.dom import minidom
+import argparse
+import os.path
+import re
+import subprocess
+import sys
+
+def git_get_sha1(git_repo):
+    proc = subprocess.Popen(['git', 'log', '--pretty=%H', '-n1', 'HEAD'],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            cwd=git_repo)
+    out, err = proc.communicate()
+    if proc.wait() != 0:
+        raise ValueError(err)
+    return out.strip().decode('utf-8')
+
+def update_project_revs(manifest_xml, repo_root, remote_set_urls, quiet,
+                        keep_existing_revision):
+    # Change aosp remote to absolute url
+    remotes = manifest_xml.getElementsByTagName('remote')
+    for remote in remotes:
+        name_attr = remote.getAttribute('name')
+        if name_attr in remote_set_urls:
+            remote.setAttribute('fetch', remote_set_urls[name_attr])
+
+    # Pin the revisions of the projects
+    projects = manifest_xml.getElementsByTagName('project')
+    for project in projects:
+        path_attr = project.getAttribute('path')
+
+        # Clear clone-depth attribute
+        if project.hasAttribute('clone-depth'):
+            # We have to clear clone-depth attribute; otherwise, the revision
+            # checkout will not work properly.
+            project.removeAttribute('clone-depth')
+
+        # Check project directory
+        project_dir = os.path.join(repo_root, path_attr)
+        if not os.path.exists(project_dir):
+            if not quiet:
+                print('NOT FOUND:', path_attr, file=sys.stderr)
+            continue
+
+        # Check if we wish to keep the existing revision
+        if keep_existing_revision and project.hasAttribute('revision'):
+            if not quiet:
+                print('KEEP:', path_attr, project.getAttribute('revision'))
+            continue
+
+        # Get the revision
+        try:
+            rev = git_get_sha1(project_dir)
+        except ValueError as e:
+            if not quiet:
+                print('GIT ERROR:', path_attr, file=sys.stderr)
+                print(str(e), file=sys.stderr)
+            continue
+
+        # Set the SHA1 obtained from the git working directory
+        if not quiet:
+            print('RECORD:', path_attr, rev)
+        project.setAttribute('revision', rev)
+
+
+def create_pinned_manifest(output_path, input_path, repo_root, remote_set_urls,
+                           quiet, keep_existing_revision):
+    # Read from the input manifest
+    manifest_xml = minidom.parse(input_path)
+
+    # Update the revision attributes with SHA1
+    update_project_revs(manifest_xml, repo_root, remote_set_urls, quiet,
+                        keep_existing_revision)
+
+    # Write to the output manifest
+    with open(output_path, 'wb') as f:
+        f.write(manifest_xml.toprettyxml(indent='', newl='', encoding='utf-8'))
+
+def main():
+    # Parse the command line options
+    parser = argparse.ArgumentParser(prog='repot')
+    parser.add_argument('root', nargs='?', default='.')
+    parser.add_argument('-o', '--output', default='pinned_manifest.xml',
+                        help='manifest output path')
+    parser.add_argument('--remote-set-url', nargs='*',
+                        help='reset remote url, e.g. name:url')
+    parser.add_argument('-q', '--quiet', action='store_true',
+                        help='silent mode')
+    parser.add_argument('--keep-existing-revision', action='store_true',
+                        help='keep existing revision')
+    args = parser.parse_args()
+
+    # Process options
+    repo_root = args.root
+    repo_dir = os.path.join(repo_root, '.repo')
+    input_path = os.path.join(repo_dir, 'manifest.xml')
+    output_path = args.output
+    quiet = args.quiet
+    keep_existing_revision = args.keep_existing_revision
+
+    remote_set_urls = dict()
+    if args.remote_set_url:
+        for spec in args.remote_set_url:
+            if not ':' in spec:
+                print('ERROR: Unknown specifier for remote-set-url: ' +
+                      '\'' + spec + '\'', file=sys.stderr)
+                continue
+            name, url = spec.split(':', 1)
+            remote_set_urls[name] = url
+
+    # Check the .repo directory
+    if not os.path.exists(repo_dir):
+        print('ERROR: \'' + repo_dir + '\' not found', file=sys.stderr)
+        sys.exit(1)
+
+    # Check the input manifest
+    if not os.path.exists(input_path):
+        print('ERROR: \'' + input_path + '\' not found', file=sys.stderr)
+        sys.exit(1)
+
+    # Create the output
+    create_pinned_manifest(output_path, input_path, repo_root, remote_set_urls,
+                           quiet, keep_existing_revision)
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        print('*user interruptted*', file=sys.stderr)
+        sys.exit(1)
