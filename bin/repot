@@ -29,7 +29,10 @@ def update_project_revs(manifest_xml, repo_root, remote_set_urls, quiet,
     # Pin the revisions of the projects
     projects = manifest_xml.getElementsByTagName('project')
     for project in projects:
-        path_attr = project.getAttribute('path')
+        if project.hasAttribute('path'):
+            path_attr = project.getAttribute('path')
+        else:
+            path_attr = project.getAttribute('name')
 
         # Clear clone-depth attribute
         if project.hasAttribute('clone-depth'):
@@ -39,7 +42,9 @@ def update_project_revs(manifest_xml, repo_root, remote_set_urls, quiet,
 
         # Check project directory
         project_dir = os.path.join(repo_root, path_attr)
-        if not os.path.exists(project_dir):
+        if os.path.exists(project_dir + '.git'):
+            project_dir += '.git'
+        elif not os.path.exists(project_dir):
             if not quiet:
                 print('NOT FOUND:', path_attr, file=sys.stderr)
             continue
